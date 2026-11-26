@@ -1,0 +1,202 @@
+<!doctype html><html><head><meta charset='utf-8'><title>CompilerHub</title>
+<style>
+ :root { --bg:#111; --panel:#1a1a1a; --fg:#ddd; --muted:#666; --btn:#666666; --accent:#f5d742; --border:#333; }
+ * { box-sizing: border-box; }
+ body { margin:0; background:var(--bg); color:var(--fg); font-family:-apple-system,'PingFang SC','Helvetica Neue',sans-serif; font-size:17px; line-height:1.6; }
+ header { padding:20px 28px; border-bottom:1px solid var(--border); }
+ h1 { font-size:32px; margin:0; color:var(--accent); letter-spacing:2px; }
+ header .sub { color:var(--muted); font-size:14px; margin-top:6px; }
+ main { display:grid; grid-template-columns:1fr 1fr; gap:20px; padding:20px 28px; }
+ .card { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:18px 20px; }
+ .card h2 { font-size:22px; margin:0 0 14px 0; color:var(--accent); border-bottom:1px dashed var(--border); padding-bottom:8px; }
+ label { display:block; font-size:15px; color:var(--muted); margin:12px 0 4px 0; }
+ input, select, textarea { width:100%; background:#0b0b0b; border:1px solid var(--border); color:var(--fg); font-size:16px; padding:10px 12px; border-radius:4px; font-family:'SF Mono',Menlo,monospace; }
+ textarea { height:260px; resize:vertical; }
+ button { background:var(--btn); color:#eee; border:none; border-radius:6px; padding:12px 20px; font-size:17px; cursor:pointer; margin-top:14px; }
+ button:hover { background:#7a7a7a; }
+ button:disabled { background:#444; cursor:not-allowed; }
+ #run-output { background:#000; border:1px solid var(--border); padding:14px; font-family:'SF Mono',Menlo,monospace; font-size:14px; color:#ccc; white-space:pre-wrap; word-break:break-all; max-height:480px; overflow:auto; }
+ .status-ok { color:#7fbf7f; } .status-err { color:#ff6f6f; } .status-warn { color:#f5d742; }
+ .tab { display:flex; gap:2px; margin-bottom:12px; }
+ .tab button { margin:0; border-radius:4px 4px 0 0; background:#2a2a2a; font-size:15px; padding:8px 16px; }
+ .tab button.active { background:var(--btn); }
+ .foot { padding:12px 28px; color:var(--muted); font-size:13px; border-top:1px solid var(--border); margin-top:20px; }
+ .foot .host { color:var(--accent); }
+</style></head><body>
+<header><h1>CompilerHub</h1>
+<div class='sub'>v0.1.0 · 多语言编译 → exe / pkg / apk · 二进制 → 伪 C</div>
+</header>
+<main>
+<section class='card'>
+<div class='tab'><button class='active' id='tab-compile'>编译</button><button id='tab-decompile'>反编译</button></div>
+<div id='panel-compile'>
+<label>源代码 (支持 .c/.cpp/.py/.js/.go/.rs/.java 等)</label>
+<textarea id='code' placeholder='#include <stdio.h>
+int main(){printf("hi\n"); return 0;}
+'></textarea>
+<div style='display:flex; gap:10px; align-items:center; margin-top:8px;'>
+<button type='button' id='btn-upload' style='background:#2a2a2a; font-size:15px; padding:8px 14px;'>📂 选择文件</button>
+<span id='file-name' style='color:#666; font-size:14px;'>未选择文件</span>
+<input type='file' id='file-input' accept='.c,.cpp,.cc,.cxx,.h,.hpp,.py,.js,.mjs,.go,.rs,.java,.swift,.kt,.txt' style='display:none'>
+</div>
+<div style='display:grid; grid-template-columns:2fr 1fr 1fr; gap:10px; margin-top:10px;'>
+<label style='margin-top:0'>输出文件</label><label style='margin-top:0'>目标</label><label style='margin-top:0'>优化</label>
+</div>
+<div style='display:grid; grid-template-columns:2fr 1fr 1fr; gap:10px;'>
+<input id='out' placeholder='/tmp/out'>
+<select id='target'><option value='exe' selected>exe</option><option value='pkg'>pkg</option><option value='apk'>apk</option></select>
+<select id='opt'><option value='0' selected>普通</option><option value='1'>-O2</option></select>
+</div>
+<button id='btn-compile'>▶ 编译</button>
+</div>
+
+<div id='panel-decompile' style='display:none'>
+<label>二进制文件路径</label>
+<input id='binary' placeholder='/path/to/binary'>
+<div style='display:grid; grid-template-columns:1fr 1fr; gap:10px;'>
+<label style='margin-top:0'>架构</label><label style='margin-top:0'>输出</label>
+</div>
+<div style='display:grid; grid-template-columns:1fr 1fr; gap:10px;'>
+<select id='arch'><option value='auto' selected>auto</option><option value='x86_64'>x86_64</option><option value='arm64'>arm64</option></select>
+<select id='dec-out'><option value='dasm' selected>反汇编</option><option value='pseudo'>伪 C</option></select>
+</div>
+<button id='btn-decompile'>▶ 反编译</button>
+</div>
+</section>
+
+<section class='card'>
+<h2>输出</h2>
+<div id='run-output'>等待操作…</div>
+</section>
+</main>
+<footer class='foot'>
+后端：<span class='host' id='host-label'>http://127.0.0.1:8080</span>
+· 所有操作在本机执行，不向任何网络发送数据。
+· 若长时间等待，请检查后端进程是否存活。
+</footer>
+
+<script>
+const $ = id => document.getElementById(id);
+const API_BASE = 'http://127.0.0.1:8080';   // 直连，绕过浏览器代理
+
+/* 带超时的 fetch，失败立刻返回错误，永远不挂死 */
+async function fetchWithTimeout(url, opts, timeoutMs) {
+  opts = opts || {};
+  timeoutMs = timeoutMs || 15000;
+  const ctl = new AbortController();
+  opts.signal = ctl.signal;
+  const t = setTimeout(() => ctl.abort(), timeoutMs);
+  try {
+    const r = await fetch(url, opts);
+    clearTimeout(t);
+    return r;
+  } catch (e) {
+    clearTimeout(t);
+    throw e;
+  }
+}
+
+async function api(path, body, timeout) {
+  const url = API_BASE + path;
+  const params = new URLSearchParams(body);
+  try {
+    const r = await fetchWithTimeout(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      keepalive: true,
+      noCache: true,
+      body: params.toString()
+    }, timeout || 30000);
+    return await r.text();
+  } catch (e) {
+    if (e.name === 'AbortError')
+      return '[超时] 后端在 15s 内没有响应。\n检查：\n  1) ch serve 是否在 8080 端口\n  2) 浏览器代理是否拦截了 127.0.0.1';
+    return '[网络错误] ' + e.message + '\n后端: ' + url;
+  }
+}
+
+/* 探活 */
+(async function probe() {
+  try {
+    const r = await fetchWithTimeout(API_BASE + '/', { method: 'GET' }, 2000);
+    if (r.ok) {
+      $('run-output').textContent = '✓ 后端 ' + API_BASE + ' 已就绪，输入代码或上传文件后点 ▶ 编译';
+      $('run-output').className = 'status-ok';
+    } else {
+      $('run-output').textContent = '后端响应异常 (HTTP ' + r.status + ')';
+      $('run-output').className = 'status-warn';
+    }
+  } catch (e) {
+    $('run-output').textContent = '⚠ 无法连接 ' + API_BASE + '：' +
+      (e.name==='AbortError' ? '连接超时' : e.message) +
+      '\n\n请在终端执行：\n  cd ~/.../CompilerHub && ./ch serve 8080';
+    $('run-output').className = 'status-err';
+  }
+})();
+
+const tabs = document.querySelectorAll('.tab button');
+tabs.forEach((b,i)=>b.onclick=()=>{
+  tabs.forEach(x=>x.classList.remove('active'));
+  b.classList.add('active');
+  $('panel-compile').style.display=i?'none':'block';
+  $('panel-decompile').style.display=i?'block':'none';
+});
+
+let busy = false;
+async function lock(label) {
+  if (busy) { $('run-output').textContent = '上次请求还在处理，请稍等…'; return false; }
+  busy = true;
+  $('btn-compile').disabled = true;
+  $('btn-decompile').disabled = true;
+  $('run-output').className = '';
+  $('run-output').textContent = label;
+  return true;
+}
+function unlock() {
+  busy = false;
+  $('btn-compile').disabled = false;
+  $('btn-decompile').disabled = false;
+}
+
+$('btn-compile').onclick = async () => {
+  if (!await lock('编译中…（最多等 30s）')) return;
+  const code = $('code').value;
+  if (!code.trim()) { $('run-output').textContent = '请先输入源代码或上传文件'; unlock(); return; }
+  const out = await api('/api/compile', {
+    code,
+    target: $('target').value,
+    optimize: $('opt').value,
+    output: $('out').value || ''
+  }, 30000);
+  $('run-output').textContent = out;
+  const exitLine = out.match(/EXITCODE=(\d+)/);
+  $('run-output').className = (exitLine && exitLine[1] === '0') ? 'status-ok' : 'status-warn';
+  unlock();
+};
+
+$('btn-upload').onclick = () => $('file-input').click();
+$('file-input').onchange = async (e) => {
+  const f = e.target.files && e.target.files[0];
+  if (!f) return;
+  $('file-name').textContent = f.name + '  (' + Math.round(f.size/1024) + ' KB)';
+  $('code').value = await f.text();
+  if (!$('out').value) {
+    const dot = f.name.lastIndexOf('.');
+    const base = dot > 0 ? f.name.slice(0, dot) : f.name;
+    $('out').value = '/tmp/' + base + '_out';
+  }
+};
+
+$('btn-decompile').onclick = async () => {
+  if (!await lock('反编译中…（最多等 30s）')) return;
+  const b = $('binary').value.trim();
+  if (!b) { $('run-output').textContent = '请输入二进制路径'; unlock(); return; }
+  const out = await api('/api/decompile', {
+    binary: b,
+    arch: $('arch').value,
+    kind: $('dec-out').value
+  }, 30000);
+  $('run-output').textContent = out;
+  unlock();
+};
+</script></body></html>
